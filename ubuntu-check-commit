@@ -1,0 +1,284 @@
+#!/usr/bin/env python3
+#
+# Check commits against Ubuntu patch submission rules
+#
+
+import argparse
+import re
+import sys
+
+import git
+import requests
+
+RE_SOB = re.compile(r"^Signed-off-by: .* <.*@.*\..*>$")
+RE_CHERRYPICK = re.compile(r"^\(cherry picked from commit [0-9a-f]{40}\)$")
+RE_BACKPORT = re.compile(r"^\(backported from commit [0-9a-f]{40}\)$")
+RE_BACKPORT_NOTE = re.compile(r"^\[[\S]+:.*\]$")
+
+
+def pr_info(*args, **kwargs):
+    print("--", *args, *kwargs)
+
+
+def pr_pass(*args, **kwargs):
+    print("   P:", *args, **kwargs)
+
+
+def pr_fail(*args, **kwargs):
+    print("   F:", *args, **kwargs)
+
+
+def get_buglinks(msg):
+    """Return the list of BugLinks"""
+    buglinks = set()
+    for line in msg.split("\n"):
+        if line.startswith("BugLink:"):
+            buglinks.add(line)
+    return buglinks
+
+
+def get_sob(msg):
+    """Return the last signed-off-by line (must be the last non-empty line)"""
+    for line in reversed(msg.split("\n")):
+        if line.startswith("Signed-off-by: "):
+            return line
+        if line.strip() == "":
+            continue
+        return ""
+    return ""
+
+
+def get_cherrypick(msg):
+    """Return the last cherry-picked line"""
+    prev_line = ""
+    for line in reversed(msg.split("\n")):
+        if line.startswith("(cherry picked from"):
+            return (line, "", "")
+        if line.startswith("(backported from"):
+            return ("", line, prev_line)
+        prev_line = line
+    return ("", "", "")
+
+
+def validate_buglink(buglink):
+    """Validate a BugLink tag"""
+    if buglink.startswith("BugLink: https://bugs.launchpad.net/"):
+        url = buglink.split(" ")[1]
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            return True
+    return False
+
+
+def validate_sob(sob):
+    """Validate a Signed-off-by tag"""
+    if RE_SOB.match(sob):
+        return True
+    return False
+
+
+def validate_cherrypick(cherrypick):
+    """Validate a cherry-pick tag"""
+    if RE_CHERRYPICK.match(cherrypick):
+        return True
+    return False
+
+
+def validate_backport(backport):
+    """Validate a backport tag"""
+    if RE_BACKPORT.match(backport):
+        return True
+    return False
+
+
+def validate_backport_note(backport_note):
+    """Validate a backport note"""
+    if RE_BACKPORT_NOTE.match(backport_note):
+        return True
+    return False
+
+
+def commit_type(title):
+    """Return the commit type"""
+    if title.startswith("UBUNTU: SAUCE:"):
+        return "sauce"
+    if title.startswith("UBUNTU:"):
+        return "ubuntu"
+    return "other"
+
+
+class Commit:
+    """Simple commit class"""
+
+    def __init__(self, commit):
+        self.commit = commit
+        self.sha = commit.hexsha
+        self.title, _, self.body = commit.message.partition("\n")
+        self.buglinks = get_buglinks(self.body)
+        self.sob = get_sob(self.body)
+        self.cherrypick, self.backport, self.backport_note = get_cherrypick(self.body)
+        self.type = commit_type(self.title)
+
+    def check_buglinks(self):
+        """Check BugLinks"""
+        if self.buglinks:
+            res = True
+            for buglink in self.buglinks:
+                if validate_buglink(buglink):
+                    pr_pass(f"Valid BugLink: {buglink}")
+                    continue
+                pr_fail(f"Invalid BugLink: {buglink}")
+                res = False
+            return res
+
+        if self.type == "ubuntu":
+            # Some commits don't require a BugLink
+            pr_pass("No BugLink found (not required)")
+            return True
+
+        pr_fail("No BugLink found")
+        return False
+
+    def check_sob(self):
+        """Check Signed-off-by"""
+        if not self.sob:
+            pr_fail("No SOB found")
+            return False
+
+        if validate_sob(self.sob):
+            pr_pass(f"Valid SOB: {self.sob}")
+            return True
+
+        pr_fail(f"Invalid SOB: {self.sob}")
+        return False
+
+    def check_cherrypick(self):
+        """Check cherry-pick tag"""
+        if self.cherrypick:
+            if validate_cherrypick(self.cherrypick):
+                pr_pass(f"Valid cherry-pick tag: {self.cherrypick}")
+                return True
+
+            pr_fail(f"Invalid cherry-pick tag: {self.cherrypick}")
+            return False
+
+        if self.backport:
+            if validate_backport(self.backport):
+                pr_pass(f"Valid backport tag: {self.backport}")
+                if validate_backport_note(self.backport_note):
+                    pr_pass(f"Valid backport note: {self.backport_note}")
+                    return True
+
+                pr_fail(f"Invalid backport note: {self.backport_note}")
+                return False
+
+            pr_fail(f"Invalid backport tag: {self.backport}")
+            return False
+
+        if self.type == "ubuntu":
+            # Some commits don't require a cherry-pick tag
+            pr_pass("No cherry-pick tag found (not required)")
+            return True
+
+        pr_fail("No cherry-pick tag found")
+        return False
+
+    def check(self):
+        """Perform all commit checks"""
+        pr_info(f'Check commit {self.sha[:12]} ("{self.title}")')
+        res = True
+        res = self.check_buglinks() and res
+        res = self.check_sob() and res
+        res = self.check_cherrypick() and res
+        return res
+
+
+class CommitSeries:
+    """Simple commit series class"""
+
+    def __init__(self):
+        self.commits = []
+
+    def append(self, commit):
+        """Append the provided commit to the commit series"""
+        self.commits.append(commit)
+
+    def check_buglinks(self):
+        """Check BugLink series consistency"""
+        tmp = None
+        for commit in self.commits:
+            if tmp is None:
+                tmp = commit.buglinks
+            tmp &= commit.buglinks
+        if not tmp:
+            pr_fail("Inconsistent BugLinks")
+            return False
+
+        pr_pass(f"Consistent BugLinks: {tmp}")
+        return True
+
+    def check_sob(self):
+        """Check Signed-off-by series consistency"""
+        tmp = None
+        for commit in self.commits:
+            if tmp is None:
+                tmp = commit.sob
+            if commit.sob != tmp:
+                pr_fail("Inconsistent SOBs")
+                return False
+
+        pr_pass(f"Consistent SOB: {tmp}")
+        return True
+
+    def check(self):
+        """Perform all individual commit and series consistency checks"""
+        res = True
+
+        # Perform individual commit checks
+        for commit in self.commits:
+            res = commit.check() and res
+
+        if len(self.commits) > 1:
+            # Perfom commit series consistency checks
+            pr_info("Check commit series consistency")
+            res = self.check_buglinks() and res
+            res = self.check_sob() and res
+
+        return res
+
+
+def load_commit_series(repo, start, end):
+    """Load the commits of the provided repo and range"""
+    series = CommitSeries()
+    repo = git.Repo(repo)
+    for c in repo.iter_commits(start + ".." + end, reverse=True):
+        series.append(Commit(c))
+    return series
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("repo", help="Path to git repo")
+    parser.add_argument("start", help="Starting sha or object to check")
+    parser.add_argument(
+        "end", nargs="?", default="HEAD", help="Ending sha or object to check"
+    )
+    parser.add_argument(
+        "--warn-only",
+        action="store_true",
+        help="Warn only but don't fail if checks fail",
+    )
+    args = parser.parse_args()
+
+    series = load_commit_series(args.repo, args.start, args.end)
+    res = series.check()
+    if res:
+        print("All checks passed")
+        sys.exit(0)
+
+    if args.warn_only:
+        print("Warning: Some checks failed")
+        sys.exit(0)
+
+    print("Error: Some checks failed")
+    sys.exit(1)

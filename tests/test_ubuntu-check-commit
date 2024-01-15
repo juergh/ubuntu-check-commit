@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+
+import glob
+import unittest
+
+import ubuntu_check_commit as ucc
+
+class TestException(Exception):
+    pass
+
+class FakeCommit:
+    def __init__(self, msg, hexsha="0123456789012345678901234567890123456789"):
+        self.message = msg
+        self.hexsha = hexsha
+
+def load_commit(fname=None, msg=None):
+    if msg:
+        return ucc.Commit(FakeCommit(msg=msg))
+
+    with open(fname, encoding="utf-8") as fh:
+        msg = fh.read()
+    return ucc.Commit(FakeCommit(msg=msg))
+
+def load_commit_series(fglob):
+    series = ucc.CommitSeries()
+    for fname in glob.glob(fglob):
+        series.append(load_commit(fname))
+    return series
+
+class Test(unittest.TestCase):
+    def test_title(self):
+        commit = load_commit(msg="foo")
+        self.assertEqual(commit.title, "foo")
+
+    # BugLink tests
+
+    def test_buglink_missing(self):
+        commit = load_commit("data/buglink-missing")
+        self.assertFalse(commit.check_buglinks())
+
+    def test_buglink_bad(self):
+        commit = load_commit("data/buglink-bad")
+        self.assertFalse(commit.check_buglinks())
+
+    def test_buglink_bad_bug(self):
+        commit = load_commit("data/buglink-bad-bug")
+        self.assertFalse(commit.check_buglinks())
+
+    def test_buglink_good(self):
+        commit = load_commit("data/buglink-good")
+        self.assertTrue(commit.check_buglinks())
+
+    def test_buglink_series_bad(self):
+        commit_series = load_commit_series("data/buglink-series-bad.*")
+        self.assertFalse(commit_series.check_buglinks())
+
+    def test_buglink_series_good(self):
+        commit_series = load_commit_series("data/buglink-series-good.*")
+        self.assertTrue(commit_series.check_buglinks())
+
+    # Signed-off-by tests
+
+    def test_sob_missing(self):
+        commit = load_commit("data/sob-missing")
+        self.assertFalse(commit.check_sob())
+
+    def test_sob_bad(self):
+        commit = load_commit("data/sob-bad")
+        self.assertFalse(commit.check_sob())
+
+    def test_sob_good(self):
+        commit = load_commit("data/sob-good")
+        self.assertTrue(commit.check_sob())
+
+    # Cherry-picked from ... tests
+
+    def test_cherrypick_missing(self):
+        commit = load_commit("data/cherrypick-missing")
+        self.assertFalse(commit.check_cherrypick())
+
+    def test_cherrypick_missing_sauce(self):
+        commit = load_commit("data/cherrypick-missing-sauce")
+        self.assertFalse(commit.check_cherrypick())
+
+    def test_cherrypick_missing_ubuntu(self):
+        commit = load_commit("data/cherrypick-missing-ubuntu")
+        self.assertTrue(commit.check_cherrypick())
+
+    def test_cherrypick_bad(self):
+        commit = load_commit("data/cherrypick-bad")
+        self.assertFalse(commit.check_cherrypick())
+
+    def test_cherrypick_good(self):
+        commit = load_commit("data/cherrypick-good")
+        self.assertTrue(commit.check_cherrypick())
+
+    # Backported from ... tests
+
+    def test_backport_bad(self):
+        commit = load_commit("data/backport-bad")
+        self.assertFalse(commit.check_cherrypick())
+
+    def test_backport_good_note_bad(self):
+        commit = load_commit("data/backport-good-note-bad")
+        self.assertFalse(commit.check_cherrypick())
+
+    def test_backport_good_note_good(self):
+        commit = load_commit("data/backport-good-note-good")
+        self.assertTrue(commit.check_cherrypick())
+
+if __name__ == "__main__":
+    unittest.main()

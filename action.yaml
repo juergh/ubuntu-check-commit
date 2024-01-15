@@ -1,0 +1,23 @@
+name: 'ubuntu-check-comit'
+description: 'Check commits against Ubuntu patch submission rules'
+inputs:
+  repo:
+    description: Path to git repo
+    default: ${{ github.workspace }}
+  start_rev:
+    description: Starting commit or object, inclusive
+    default: ${{ github.event.pull_request.base.sha }}
+  end_rev:
+    description: Ending commit or object, inclusive
+    default: ${{ github.event.pull_request.head.sha }}
+runs:
+  using: "composite"
+  steps:
+    - shell: bash
+      # Capture untrusted variables here to prevent shell evaluation
+      env:
+        REPO: ${{ inputs.repo }}
+        START: ${{ inputs.start_rev }}
+        END: ${{ inputs.end_rev }}
+      run: |
+        python3 ${{ github.action_path }}/ubuntu-check-commit "${REPO}" "${START}" "${END}"
