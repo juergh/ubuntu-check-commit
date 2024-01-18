@@ -5,13 +5,16 @@ import unittest
 
 import ubuntu_check_commit as ucc
 
+
 class TestException(Exception):
     pass
+
 
 class FakeCommit:
     def __init__(self, msg, hexsha="0123456789012345678901234567890123456789"):
         self.message = msg
         self.hexsha = hexsha
+
 
 def load_commit(fname=None, msg=None):
     if msg:
@@ -21,11 +24,13 @@ def load_commit(fname=None, msg=None):
         msg = fh.read()
     return ucc.Commit(FakeCommit(msg=msg))
 
+
 def load_commit_series(fglob):
     series = ucc.CommitSeries()
     for fname in glob.glob(fglob):
         series.append(load_commit(fname))
     return series
+
 
 class Test(unittest.TestCase):
     def test_title(self):
@@ -107,6 +112,7 @@ class Test(unittest.TestCase):
     def test_backport_good_note_good(self):
         commit = load_commit("data/backport-good-note-good")
         self.assertTrue(commit.check_cherrypick())
+
 
 if __name__ == "__main__":
     unittest.main()
